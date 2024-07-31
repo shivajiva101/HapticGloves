@@ -1,13 +1,39 @@
-// Arduino code to run random Tass 3:2 pattern on RP2040 Mbed
-// Written for RP2040 Zero by shivajiva101@hotmail.com
-// Write the code to use millis() so it's non blocking.
-// Working on a 3:2 ON:OFF pattern with a random
-// index vector for the data selected at the start of
-// each of the 3 sequences before the rest period.
-// The following code is a simple example of a finite
-// state machine that meets the requirement. Syncronisation
-// between hands is achieved using IR comms with negotiation
-// for master/slave and a timing offset.
+/*
+Arduino code to run random Tass 3:2 pattern on RP2040 Mbed
+Written for RP2040 Zero by shivajiva101@hotmail.com
+
+Code is written utilising millis() and time slices.
+Working on a 3:2 ON:OFF pattern with a random index vector
+for the data selected at the start of each of the 3 sequences
+before the rest period.
+
+The following code is just one simple example of a finite
+state machine that meets the requirement. Syncronisation
+between hands is achieved using IR comms with negotiation
+for master/slave and timing offsets plus sync pulses to
+maintain sync over time. 
+  
+Master & Slave Logic
+
+If the sync flag is false broadcast Master REQ periodically
+at a random start time between 2 & 4 seconds after powerup
+whilst simultaneously listening for decoded responses. If
+a Master REQ is received stop broadcasting and return Slave
+ACK, the response will be Master ACK and the respective
+devices will count down their delays. Master turns
+off its IR receiver and broadcasts a sync command in the
+consequent off period of the pattern ratio. The slave 
+device attempts to sync to the master whenever it receives
+a sync command in the consequent off period of the pattern
+ratio. NEC Commands used are as follows:
+
+  0x34  Master REQ
+  0x35  Slave ACK
+  0x36  Master ACK
+  0x40  Master SYNC
+  
+  
+*/
 
 #include <IRremote.hpp>
 #include <Adafruit_NeoPixel.h>
@@ -25,7 +51,7 @@
 #define PWD (0x60)
 
 int Hand[4] = { 2, 3, 4, 5 };  // physical pin assignments for haptic motors
-byte mode = 1;                 // set this to 2 to run the fixed sequence in array Seq1
+byte mode = 1;                 // use 2 for the fixed array sequence Seq1[]
 
 // Define all 22 non sequential random sequences for 4 fingers
 unsigned int Seq[] = { 0x1243, 0x1324, 0x1342, 0x1423, 0x1432, 0x2134, 0x2143, 0x2314, 0x2341, 0x2413, 0x2431,
@@ -34,7 +60,7 @@ unsigned int Seq[] = { 0x1243, 0x1324, 0x1342, 0x1423, 0x1432, 0x2134, 0x2143, 0
 // Define the Tass thesis pattern as the alt sequence.
 unsigned int Seq1[] = { 0x1432, 0x4132, 0x3142, 0x2341, 0x2134, 0x3214 };
 
-bool cng, initSeq, insync, slave, delayTmrActive, broadcast;
+bool cng, initSeq, insync, slave, delayTmrActive, broadcast, pulsed;
 
 uint8_t Fingers[4];  // array to hold the current sequence
 
@@ -42,7 +68,7 @@ volatile uint8_t nSeq, finger, pin, stage, loops, nIdx;
 unsigned long prevMillis, tmr, txDelayTmr, txDelay, delayTmr, delayMillis;
 unsigned long masterDelay = 1000;
 // alter this for sync issues, small value changes only. Upload any changes to both devices!
-unsigned long slaveDelay = 850;
+unsigned long slaveDelay = 1000 - 134;
 
 Adafruit_NeoPixel pixels(1, 16, NEO_GRB + NEO_KHZ800);
 
@@ -108,15 +134,15 @@ void setPixel(uint8_t r, uint8_t g, uint8_t b, uint8_t bright) {
 void setup() {
 
   // Serial
-  Serial.begin();
+  //Serial.begin();
   //while (!Serial) {;} // development only!
-  Serial.println("Haptic Glove - RP2040 zero");
-  Serial.println("Loading settings from eeprom...");
+  //Serial.println("Haptic Glove - RP2040 zero");
+  //Serial.println("Loading settings from eeprom...");
 
   loadSettings();
 
-  Serial.printf("mode = %d", mode);
-  Serial.println();
+  //Serial.printf("mode = %d", mode);
+  //Serial.println();
 
   randomSeed(analogRead(A0));  // seed the RNG
 
@@ -151,9 +177,9 @@ void setup() {
   IrReceiver.begin(IR_RECEIVE_PIN);  // start rx
   IrSender.begin(IR_SEND_PIN);       // start tx
   disableLEDFeedback();
-  Serial.print("Ready to receive IR signals of protocols: ");
-  printActiveIRProtocols(&Serial);
-  Serial.println();
+  //Serial.print("Ready to receive IR signals of protocols: ");
+  //printActiveIRProtocols(&Serial);
+  //Serial.println();
 
   // NeoPixel (WS2812B)
   pixels.begin();                   // init NeoPixel strip object
@@ -192,6 +218,7 @@ void loop() {
     pin = Hand[Fingers[finger]];      // select pin
     tmr = 0;                          // reset
     stage = 1;                        // init stage (motor duration)
+    pulsed = false;                   // reset sync pulse flag
     digitalWrite(pin, HIGH);          // start motor
     setPixel(0, 255, 0, BRIGHTNESS);  // green led
   }
@@ -226,25 +253,47 @@ void loop() {
   }
 
   if (stage == 3) {
+    // master mode
+    if (!slave && !pulsed && tmr >= 500) {
+      IrReceiver.stop();                                 // turn receiver OFF
+      unsigned long t = millis();                        // store current millis
+      IrSender.sendNEC(0x00, 0x40, 0);                   // send sync pulse code
+      //Serial.printf("sync send time %d", millis() - t);  // send to terminal
+      //Serial.println();                                  // newline
+      Serial.flush();                                    // clear the buffer
+      IrReceiver.start();                                // turn receiver ON
+      pulsed = true;                                     // set branch flag
+
+    } else {
+      // Slave mode!
+      // check if IR data was received until frame off time is reached
+      if (IrReceiver.decode()) {
+        IrReceiver.resume();
+        if (IrReceiver.decodedIRData.command == 0x40) {
+          /* modify tmr based on value reached when entering this branch
+          it should be 500ms plus the transmit and receive time so
+          alter by the diff. Longer than the predicted time means
+          the master is behind so retarding the timer by the diff
+          should bring us closer to sync. Shorter than predicted will
+          give a negative result, the timer is advanced by the diff
+          to bring the devices in closer sync. The fact entry to this
+          branch requires an IR decode event allows the code to continue
+          using timers until the next successful sync event.
+          */
+          int d = tmr - 634;
+          tmr -= d;
+          //Serial.printf("diff is %d", d);
+          //Serial.println();
+        }
+      }
+    }
     // Apply the consequent of the pattern ratio
     // i.e. the OFF time at the end of the antecedent pattern ratio
     if (tmr >= FRAME_OFF_TIME) {
-      initSeq = true;  // init randomly selected sequence
+      initSeq = true;  // init new sequence
       loops = 1;       // reset
     }
   }
-
-  /*
-  Master & Slave - for the purpose of sync between gloves
-  there is a need to determine which hand is acting as the
-  master. Some negotiation is necessary since a unified
-  firmware is desirable for simplicity. To achieve this
-  requirement the introduction of a random offset to the
-  delay before broadcasting should increase the odds of
-  a quick sync by reducing the odds of a collision if
-  power is applied in sync i.e. single powerbank and a
-  split USB lead. 
-  */
 
   if (!insync) {
 
@@ -252,26 +301,24 @@ void loop() {
 
     if (IrReceiver.decode()) {
 
-      // dev code
       //IrReceiver.printIRResultMinimal(&Serial);
       //Serial.println();
 
       if (IrReceiver.decodedIRData.command == 0x34) {
         // master REQ received
-        broadcast = false;  // stop broadcasting
-        IrReceiver.stop();  // turn receiver OFF
+        broadcast = false;                // stop broadcasting
+        IrReceiver.stop();                // turn receiver OFF
         IrSender.sendNEC(0x00, 0x35, 0);  // send ack
         IrReceiver.start();               // turn receiver ON
       } else if (IrReceiver.decodedIRData.command == 0x35) {
         // slave ACK received
-        slave = false;      // set master
-        insync = true;      // block re-entry
-        IrReceiver.stop();  // turn receiver OFF
+        slave = false;                    // set master
+        insync = true;                    // block re-entry
+        IrReceiver.stop();                // turn receiver OFF
         IrSender.sendNEC(0x00, 0x36, 0);  // send ack
-        IrReceiver.start();               // turn receiver ON
-        delayTmrActive = true;            // activate tmr
-        delayMillis = masterDelay;        // set delay
-        broadcast = false;                // stop broadcasting
+        delayTmrActive = true;      // activate tmr
+        delayMillis = masterDelay;  // set delay
+        broadcast = false;          // stop broadcasting
       } else if (IrReceiver.decodedIRData.command == 0x36) {
         // master ACK received
         slave = true;              // set slave
@@ -282,7 +329,7 @@ void loop() {
       IrReceiver.resume();
     }
 
-    // No data received and delay expired yet?
+    // No data received, delay expired yet?
     if (broadcast && txDelayTmr >= txDelay) {
       IrReceiver.stop();                // turn receiver OFF
       IrSender.sendNEC(0x00, 0x34, 0);  // broadcast REQ
