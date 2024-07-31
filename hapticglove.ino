@@ -50,6 +50,7 @@ ratio. NEC Commands used are as follows:
 #define EEPROM_SIZE 128   // number of bytes of mem used as EEPROM
 #define PWD (0x60)        // used for initialising settings
 #define TR_Time 130       // transmit & receive time in ms
+#define RUNTIME 7200000   // operation period
 
 int Hand[4] = { 2, 3, 4, 5 };  // physical pin assignments for haptic motors
 byte mode = 1;                 // you can use 2 for the fixed array tass thesis sequence Seq1[]
@@ -66,7 +67,7 @@ bool cng, initSeq, insync, slave, delayTmrActive, broadcast, pulsed;
 uint8_t Fingers[4];  // array to hold the current sequence
 
 volatile uint8_t nSeq, finger, pin, stage, loops, nIdx;
-unsigned long prevMillis, tmr, txDelayTmr, txDelay, delayTmr, delayMillis;
+unsigned long prevMillis, tmr, txDelayTmr, txDelay, delayTmr, delayMillis, total;
 unsigned long masterDelay = 1000;
 unsigned long slaveDelay = 1000 - TR_Time;
 
@@ -203,6 +204,7 @@ void loop() {
   }
 
   tmr = tmr + delta;  // update timer variable
+  total = total + delta;
 
   if (initSeq) {
     initSeq = false;  // unset flag
@@ -220,15 +222,15 @@ void loop() {
     stage = 1;                        // init stage (motor duration)
     pulsed = false;                   // reset sync pulse flag
     digitalWrite(pin, HIGH);          // start motor
-    setPixel(0, 255, 0, BRIGHTNESS);  // green led
+    setPixel(0, 255, 0, BRIGHTNESS);  // green
   }
 
   if (stage == 1) {
-    if (tmr >= FINGER_ON_TIME) {  // timer check
-      digitalWrite(pin, LOW);     // stop motor
-      setPixel(0, 0, 0, 0);       // off led
-      stage = 2;                  // init next stage (off duration)
-      tmr = 0;                    // reset
+    if (tmr >= FINGER_ON_TIME) {          // timer check
+      digitalWrite(pin, LOW);             // stop motor
+      setPixel(255, 0, 255, BRIGHTNESS);  // purple
+      stage = 2;                          // init next stage (off duration)
+      tmr = 0;                            // reset
     }
   }
 
@@ -246,7 +248,7 @@ void loop() {
           initSeq = true;             // init sequence
         } else {
           stage = 3;                        // init stage (rest phase)
-          setPixel(0, 0, 255, BRIGHTNESS);  // blue led
+          setPixel(0, 0, 255, BRIGHTNESS);  // blue
         }
       }
     }
@@ -292,8 +294,12 @@ void loop() {
     // Apply the consequent of the pattern ratio
     // i.e. the OFF time at the end of the antecedent pattern ratio
     if (tmr >= FRAME_OFF_TIME) {
-      initSeq = true;  // init new sequence
-      loops = 1;       // reset
+      if (total >= RUNTIME) {
+        initSeq = false;  // timeout reached
+      } else {
+        initSeq = true;  // init new sequence
+      }
+      loops = 1;  // reset
     }
   }
 
@@ -340,7 +346,6 @@ void loop() {
       IrReceiver.start();               // turn receiver ON
       txDelayTmr = 0;                   // reset
     }
-
   } else if (delayTmrActive) {      // status check
     delayTmr = delayTmr + delta;    // increment
     if (delayTmr >= delayMillis) {  // timer check
@@ -351,8 +356,7 @@ void loop() {
     if (!slave && !pulsed && delayTmr >= 100) {
       unsigned long t = millis();       // store current millis
       IrSender.sendNEC(0x00, 0x40, 0);  // send sync pulse code
-      pulsed = true;       // set branch flag
-
+      pulsed = true;                    // set branch flag
     } else {
       // Slave mode!
       // check if IR data was received until delay time is reached
