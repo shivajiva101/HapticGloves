@@ -39,19 +39,20 @@ ratio. NEC Commands used are as follows:
 #include <Adafruit_NeoPixel.h>
 #include "EEPROM.h"
 
-#define FINGER_ON_TIME 167
-#define FINGER_OFF_TIME 66
+#define FINGER_ON_TIME 167  // motor ON time in ms
+#define FINGER_OFF_TIME 66  // motor OFF time in ms
 #define FRAME_OFF_TIME (8 * (FINGER_ON_TIME + FINGER_OFF_TIME) - FINGER_OFF_TIME)
-#define IR_SEND_PIN 6
-#define IR_RECEIVE_PIN 7
-#define BRIGHTNESS 50
-#define DECODE_NEC
-#define EEPROM_ADDR 0
-#define EEPROM_SIZE 256
-#define PWD (0x60)
+#define IR_SEND_PIN 6     // physical device pin
+#define IR_RECEIVE_PIN 7  // physical device pin
+#define BRIGHTNESS 50     // LED brightness
+#define DECODE_NEC        // reqd for IR
+#define EEPROM_ADDR 0     // start offset
+#define EEPROM_SIZE 128   // number of bytes of mem used as EEPROM
+#define PWD (0x60)        // used for initialising settings
+#define TR_Time 130       // transmit & receive time in ms
 
 int Hand[4] = { 2, 3, 4, 5 };  // physical pin assignments for haptic motors
-byte mode = 1;                 // use 2 for the fixed array sequence Seq1[]
+byte mode = 1;                 // you can use 2 for the fixed array tass thesis sequence Seq1[]
 
 // Define all 22 non sequential random sequences for 4 fingers
 unsigned int Seq[] = { 0x1243, 0x1324, 0x1342, 0x1423, 0x1432, 0x2134, 0x2143, 0x2314, 0x2341, 0x2413, 0x2431,
@@ -67,8 +68,7 @@ uint8_t Fingers[4];  // array to hold the current sequence
 volatile uint8_t nSeq, finger, pin, stage, loops, nIdx;
 unsigned long prevMillis, tmr, txDelayTmr, txDelay, delayTmr, delayMillis;
 unsigned long masterDelay = 1000;
-// alter this for sync issues, small value changes only. Upload any changes to both devices!
-unsigned long slaveDelay = 1000 - 134;
+unsigned long slaveDelay = 1000 - TR_Time;
 
 Adafruit_NeoPixel pixels(1, 16, NEO_GRB + NEO_KHZ800);
 
@@ -226,7 +226,7 @@ void loop() {
   if (stage == 1) {
     if (tmr >= FINGER_ON_TIME) {  // timer check
       digitalWrite(pin, LOW);     // stop motor
-      setPixel(255, 0, 0, 5);     // red led
+      setPixel(0, 0, 0, 0);       // off led
       stage = 2;                  // init next stage (off duration)
       tmr = 0;                    // reset
     }
@@ -255,14 +255,14 @@ void loop() {
   if (stage == 3) {
     // master mode
     if (!slave && !pulsed && tmr >= 500) {
-      IrReceiver.stop();                                 // turn receiver OFF
-      unsigned long t = millis();                        // store current millis
-      IrSender.sendNEC(0x00, 0x40, 0);                   // send sync pulse code
+      IrReceiver.stop();                // turn receiver OFF
+      unsigned long t = millis();       // store current millis
+      IrSender.sendNEC(0x00, 0x40, 0);  // send sync pulse code
       //Serial.printf("sync send time %d", millis() - t);  // send to terminal
       //Serial.println();                                  // newline
-      Serial.flush();                                    // clear the buffer
-      IrReceiver.start();                                // turn receiver ON
-      pulsed = true;                                     // set branch flag
+      Serial.flush();      // clear the buffer
+      IrReceiver.start();  // turn receiver ON
+      pulsed = true;       // set branch flag
 
     } else {
       // Slave mode!
@@ -280,8 +280,10 @@ void loop() {
           branch requires an IR decode event allows the code to continue
           using timers until the next successful sync event.
           */
-          int d = tmr - 634;
-          tmr -= d;
+          int d = tmr - (500 + TR_Time);  // calc diff
+          if (d > -50 && d < 50) {        // sanity check
+            tmr -= d;                     // modify timer var
+          }
           //Serial.printf("diff is %d", d);
           //Serial.println();
         }
@@ -301,6 +303,7 @@ void loop() {
 
     if (IrReceiver.decode()) {
 
+      // dev code
       //IrReceiver.printIRResultMinimal(&Serial);
       //Serial.println();
 
@@ -316,6 +319,7 @@ void loop() {
         insync = true;                    // block re-entry
         IrReceiver.stop();                // turn receiver OFF
         IrSender.sendNEC(0x00, 0x36, 0);  // send ack
+        //IrReceiver.start();               // turn receiver ON
         delayTmrActive = true;      // activate tmr
         delayMillis = masterDelay;  // set delay
         broadcast = false;          // stop broadcasting
@@ -329,7 +333,7 @@ void loop() {
       IrReceiver.resume();
     }
 
-    // No data received, delay expired yet?
+    // No data received and delay expired yet?
     if (broadcast && txDelayTmr >= txDelay) {
       IrReceiver.stop();                // turn receiver OFF
       IrSender.sendNEC(0x00, 0x34, 0);  // broadcast REQ
@@ -342,7 +346,25 @@ void loop() {
     if (delayTmr >= delayMillis) {  // timer check
       delayTmrActive = false;       // block re-entry
       initSeq = true;               // activate haptics
-      delayTmr = 0;
+      delayTmr = 0;                 // reset
+    }
+    if (!slave && !pulsed && delayTmr >= 100) {
+      unsigned long t = millis();       // store current millis
+      IrSender.sendNEC(0x00, 0x40, 0);  // send sync pulse code
+      pulsed = true;       // set branch flag
+
+    } else {
+      // Slave mode!
+      // check if IR data was received until delay time is reached
+      if (IrReceiver.decode()) {
+        IrReceiver.resume();
+        if (IrReceiver.decodedIRData.command == 0x40) {
+          int d = tmr - (100 + TR_Time);  // calc diff
+          if (d > -50 && d < 50) {        // sanity check
+            tmr -= d;                     // modify timer var
+          }
+        }
+      }
     }
   }
 }
