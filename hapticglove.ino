@@ -363,9 +363,9 @@ void loop() {
       if (IrReceiver.decode()) {
         IrReceiver.resume();
         if (IrReceiver.decodedIRData.command == 0x40) {
-          int d = tmr - (100 + TR_Time);  // calc diff
+          int d = delayTmr - (100 + TR_Time);  // calc diff
           if (d > -50 && d < 50) {        // sanity check
-            tmr -= d;                     // modify timer var
+            delayTmr -= d;                // modify timer var
           }
         }
       }
