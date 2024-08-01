@@ -49,7 +49,7 @@ ratio. NEC Commands used are as follows:
 #define EEPROM_ADDR 0     // start offset
 #define EEPROM_SIZE 128   // number of bytes of mem used as EEPROM
 #define PWD (0x60)        // used for initialising settings
-#define TR_Time 130       // transmit & receive time in ms
+#define TR_TIME 130       // transmit & receive time in ms
 #define RUNTIME 7200000   // operation period
 
 int Hand[4] = { 2, 3, 4, 5 };  // physical pin assignments for haptic motors
@@ -69,7 +69,7 @@ uint8_t Fingers[4];  // array to hold the current sequence
 volatile uint8_t nSeq, finger, pin, stage, loops, nIdx;
 unsigned long prevMillis, tmr, txDelayTmr, txDelay, delayTmr, delayMillis, total;
 unsigned long masterDelay = 1000;
-unsigned long slaveDelay = 1000 - TR_Time;
+unsigned long slaveDelay = 1000 - TR_TIME;
 
 Adafruit_NeoPixel pixels(1, 16, NEO_GRB + NEO_KHZ800);
 
@@ -107,7 +107,7 @@ void loadSettings() {
 void saveSettings() {
   if (loadByte(0) != PWD) {
     saveByte(0, PWD);  // init first byte with password
-    saveByte(1, 1);    // save mode
+    saveByte(1, mode);    // save mode
   }
   EEPROM.commit();  // write shadow copy to flash
 }
@@ -282,7 +282,7 @@ void loop() {
           branch requires an IR decode event allows the code to continue
           using timers until the next successful sync event.
           */
-          int d = tmr - (500 + TR_Time);  // calc diff
+          int d = tmr - (500 + TR_TIME);  // calc diff
           if (d > -50 && d < 50) {        // sanity check
             tmr -= d;                     // modify timer var
           }
@@ -363,7 +363,7 @@ void loop() {
       if (IrReceiver.decode()) {
         IrReceiver.resume();
         if (IrReceiver.decodedIRData.command == 0x40) {
-          int d = delayTmr - (100 + TR_Time);  // calc diff
+          int d = delayTmr - (100 + TR_TIME);  // calc diff
           if (d > -50 && d < 50) {        // sanity check
             delayTmr -= d;                // modify timer var
           }
