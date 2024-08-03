@@ -248,24 +248,39 @@ void loop() {
           initSeq = true;             // init sequence
         } else {
           stage = 3;                        // init stage (rest phase)
-          setPixel(0, 0, 255, BRIGHTNESS);  // blue
+          if (slave) {
+            setPixel(255, 0, 0, BRIGHTNESS);  // slave is red
+          } else {
+            setPixel(0, 0, 255, BRIGHTNESS);  // master is blue
+          }
         }
       }
     }
   }
 
   if (stage == 3) {
-    // master mode
-    if (!slave && !pulsed && tmr >= 500) {
-      IrReceiver.stop();                // turn receiver OFF
-      unsigned long t = millis();       // store current millis
-      IrSender.sendNEC(0x00, 0x40, 0);  // send sync pulse code
-      //Serial.printf("sync send time %d", millis() - t);  // send to terminal
-      //Serial.println();                                  // newline
-      Serial.flush();      // clear the buffer
-      IrReceiver.start();  // turn receiver ON
-      pulsed = true;       // set branch flag
-
+    // Apply the consequent of the pattern ratio
+    // i.e. the OFF time at the end of the antecedent pattern ratio
+    if (tmr >= FRAME_OFF_TIME) {
+      if (total >= RUNTIME) {
+        initSeq = false;  // timeout reached
+      } else {
+        initSeq = true;  // init new sequence
+      }
+      loops = 1;  // reset
+    }
+        // master mode
+    if (!slave) {
+      if (!pulsed && tmr >= 500) {
+        IrReceiver.stop();                // turn receiver OFF
+        unsigned long t = millis();       // store current millis
+        IrSender.sendNEC(0x00, 0x40, 0);  // send sync pulse code
+        //Serial.printf("sync send time %d", millis() - t);  // send to terminal
+        //Serial.println();                                  // newline
+        Serial.flush();      // clear the buffer
+        IrReceiver.start();  // turn receiver ON
+        pulsed = true;       // set branch flag
+      }
     } else {
       // Slave mode!
       // check if IR data was received until frame off time is reached
@@ -291,16 +306,6 @@ void loop() {
         }
       }
     }
-    // Apply the consequent of the pattern ratio
-    // i.e. the OFF time at the end of the antecedent pattern ratio
-    if (tmr >= FRAME_OFF_TIME) {
-      if (total >= RUNTIME) {
-        initSeq = false;  // timeout reached
-      } else {
-        initSeq = true;  // init new sequence
-      }
-      loops = 1;  // reset
-    }
   }
 
   if (!insync) {
@@ -312,6 +317,7 @@ void loop() {
       // dev code
       //IrReceiver.printIRResultMinimal(&Serial);
       //Serial.println();
+      IrReceiver.resume();
 
       if (IrReceiver.decodedIRData.command == 0x34) {
         // master REQ received
@@ -325,7 +331,6 @@ void loop() {
         insync = true;                    // block re-entry
         IrReceiver.stop();                // turn receiver OFF
         IrSender.sendNEC(0x00, 0x36, 0);  // send ack
-        //IrReceiver.start();               // turn receiver ON
         delayTmrActive = true;      // activate tmr
         delayMillis = masterDelay;  // set delay
         broadcast = false;          // stop broadcasting
@@ -336,7 +341,6 @@ void loop() {
         delayTmrActive = true;     // activate tmr
         delayMillis = slaveDelay;  // set delay
       }
-      IrReceiver.resume();
     }
 
     // No data received and delay expired yet?
@@ -353,10 +357,12 @@ void loop() {
       initSeq = true;               // activate haptics
       delayTmr = 0;                 // reset
     }
-    if (!slave && !pulsed && delayTmr >= 100) {
-      unsigned long t = millis();       // store current millis
-      IrSender.sendNEC(0x00, 0x40, 0);  // send sync pulse code
-      pulsed = true;                    // set branch flag
+    if (!slave) {
+      if (!pulsed && delayTmr >= 100)
+        unsigned long t = millis();       // store current millis
+        IrSender.sendNEC(0x00, 0x40, 0);  // send sync pulse code
+        pulsed = true;                    // set branch flag
+      }
     } else {
       // Slave mode!
       // check if IR data was received until delay time is reached
