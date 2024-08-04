@@ -135,10 +135,10 @@ void setPixel(uint8_t r, uint8_t g, uint8_t b, uint8_t bright) {
 void setup() {
 
   // Serial
-  Serial.begin();
+  //Serial.begin();
   //while (!Serial) {;} // development only!
-  Serial.println("Haptic Glove - RP2040 zero");
-  Serial.println("Loading settings from eeprom...");
+  //Serial.println("Haptic Glove - RP2040 zero");
+  //Serial.println("Loading settings from eeprom...");
 
   loadSettings();
 
@@ -178,9 +178,9 @@ void setup() {
   IrReceiver.begin(IR_RECEIVE_PIN);  // start rx
   IrSender.begin(IR_SEND_PIN);       // start tx
   disableLEDFeedback();
-  Serial.print("Ready to receive IR signals of protocols: ");
-  printActiveIRProtocols(&Serial);
-  Serial.println();
+  //Serial.print("Ready to receive IR signals of protocols: ");
+  //printActiveIRProtocols(&Serial);
+  //Serial.println();
 
   // NeoPixel (WS2812B)
   pixels.begin();                   // init NeoPixel strip object
@@ -275,10 +275,10 @@ void loop() {
         //IrReceiver.stop();                // turn receiver OFF
         unsigned long t = millis();       // store current millis
         IrSender.sendNEC(0x00, 0x40, 0);  // send sync pulse code
-        Serial.printf("sync send time %d", millis() - t);  // send to terminal
-        Serial.println();                                  // newline
-        Serial.flush();      // clear the buffer
-        //IrReceiver.start();  // turn receiver ON
+        //Serial.printf("sync send time %d", millis() - t);  // send to terminal
+        //Serial.println();                                  // newline
+        //Serial.flush();      // clear the buffer
+        IrReceiver.start();  // turn receiver ON
         pulsed = true;       // set branch flag
       }
     } else {
@@ -301,8 +301,8 @@ void loop() {
           if (d > -50 && d < 50) {        // sanity check
             tmr -= d;                     // modify timer var
           }
-          Serial.printf("diff is %d", d);
-          Serial.println();
+          //Serial.printf("diff is %d", d);
+          //Serial.println();
         }
       }
     }
@@ -315,8 +315,8 @@ void loop() {
     if (IrReceiver.decode()) {
 
       // dev code
-      IrReceiver.printIRResultMinimal(&Serial);
-      Serial.println();
+      //IrReceiver.printIRResultMinimal(&Serial);
+      //Serial.println();
       IrReceiver.resume();
 
       if (IrReceiver.decodedIRData.command == 0x34) {
