@@ -361,7 +361,7 @@ void loop() {
       delayTmr = 0;                 // reset
     }
     if (!slave) {
-      if (!pulsed && delayTmr >= 200) {
+      if (!pulsed && delayTmr >= 100) {
         unsigned long t = millis();     // store current millis
         IrSender.sendNEC(0x00, 0x40, 0);  // send sync pulse code
         pulsed = true;                    // set branch flag
@@ -372,7 +372,7 @@ void loop() {
       if (IrReceiver.decode()) {
         IrReceiver.resume();
         if (IrReceiver.decodedIRData.command == 0x40) {
-          int d = delayTmr - (200 + TR_TIME);  // calc diff
+          int d = delayTmr - 100;  // calc diff
           if (d > -50 && d < 50) {             // sanity check
             delayTmr -= d;                     // modify timer var
           }
