@@ -272,7 +272,7 @@ void loop() {
     // master mode
     if (!slave) {
       if (!pulsed && tmr >= 500) {
-        //IrReceiver.stop();                // turn receiver OFF
+        IrReceiver.stop();                // turn receiver OFF
         unsigned long t = millis();       // store current millis
         IrSender.sendNEC(0x00, 0x40, 0);  // send sync pulse code
         //Serial.printf("sync send time %d", millis() - t);  // send to terminal
