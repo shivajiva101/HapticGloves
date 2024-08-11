@@ -11,12 +11,13 @@ The following code is just one simple example of a finite
 state machine that meets the requirement. Syncronisation
 between hands is achieved using IR comms with negotiation
 for master/slave and timing offsets plus sync pulses to
-maintain sync over time. 
+maintain sync over time with compensation when IR comms
+is blocked by physical objects.
   
 Master & Slave Logic
 
 If the sync flag is false broadcast Master REQ periodically
-at a random start time between 2 & 4 seconds after powerup
+at a random start time between 1 & 5 seconds after powerup
 whilst simultaneously listening for decoded responses. If
 a Master REQ is received stop broadcasting and return Slave
 ACK, the response will be Master ACK and the respective
@@ -24,15 +25,13 @@ devices will count down their delays. Master turns
 off its IR receiver and broadcasts a sync command in the
 consequent off period of the pattern ratio. The slave 
 device attempts to sync to the master whenever it receives
-a sync command in the consequent off period of the pattern
-ratio. NEC Commands used are as follows:
-
-  0x34  Master REQ
-  0x35  Slave ACK
-  0x36  Master ACK
-  0x40  Master SYNC
-  
-  
+a sync command in its consequent off period of the pattern
+ratio. When that isn't possible i.e. when the devices cannot
+see each other, the code compensates by determining if the
+slave is ahead or behind master when IR comms is present
+during the first 30 seconds and altering the timer every
+6th sequence by 1ms. This strategy is based on the event
+pattern observed when IR comms is present.
 */
 
 #include <IRremote.hpp>
@@ -42,17 +41,21 @@ ratio. NEC Commands used are as follows:
 #define FINGER_ON_TIME 167  // motor ON time in ms
 #define FINGER_OFF_TIME 66  // motor OFF time in ms
 #define FRAME_OFF_TIME (8 * (FINGER_ON_TIME + FINGER_OFF_TIME) - FINGER_OFF_TIME)
-#define IR_SEND_PIN 6     // physical device pin
-#define IR_RECEIVE_PIN 7  // physical device pin
-#define BRIGHTNESS 50     // LED brightness
-#define DECODE_NEC        // reqd for IR
-#define EEPROM_ADDR 0     // start offset
-#define EEPROM_SIZE 128   // number of bytes of mem used as EEPROM
-#define PWD (0x60)        // used for initialising settings
-#define TR_TIME 130       // transmit & receive time in ms
-#define RUNTIME 7200000   // operation period
+#define IR_SEND_PIN 6       // physical device pin
+#define IR_RECEIVE_PIN 7    // physical device pin
+#define BRIGHTNESS 50       // LED brightness
+#define DECODE_NEC          // reqd for IR
+#define EEPROM_ADDR 0       // start offset
+#define EEPROM_SIZE 128     // number of bytes of mem used as EEPROM
+#define PWD (0x60)          // used for initialising settings
+#define TR_TIME 130         // transmit & receive time in ms
+#define RUNTIME 7200000     // session operation period in ms
+#define MASTER_REQ (0x34)   // NEC command used for master REQ
+#define MASTER_ACK (0x36)   // NEC IR command used for master ACK
+#define MASTER_SYNC (0x40)  // NEC IR command used for master SYNC
+#define SLAVE_ACK (0x35)    // NEC IR command used for slave ACK
 
-int Hand[4] = { 2, 3, 4, 5 };  // physical pin assignments for haptic motors
+int Hand[4] = { 2, 3, 4, 5 };  // physical board pin assignments for haptic motors
 byte mode = 1;                 // you can use 2 for the fixed array tass thesis sequence Seq1[]
 
 // Define all 22 non sequential random sequences for 4 fingers
@@ -62,14 +65,15 @@ unsigned int Seq[] = { 0x1243, 0x1324, 0x1342, 0x1423, 0x1432, 0x2134, 0x2143, 0
 // Define the Tass thesis pattern as the alt sequence.
 unsigned int Seq1[] = { 0x1432, 0x4132, 0x3142, 0x2341, 0x2134, 0x3214 };
 
-bool cng, initSeq, insync, slave, delayTmrActive, broadcast, pulsed;
+bool cng, initSeq, insync, slave, delayTmrActive, broadcast, pulsed, bSync;
 
 uint8_t Fingers[4];  // array to hold the current sequence
 
-volatile uint8_t nSeq, finger, pin, stage, loops, nIdx;
-unsigned long prevMillis, tmr, txDelayTmr, txDelay, delayTmr, delayMillis, total;
-unsigned long masterDelay = 1000;
-unsigned long slaveDelay = 1000 - TR_TIME;
+volatile uint8_t nSeq, finger, pin, stage, loops, nIdx, tristate, iSync;
+unsigned long prevMillis, txDelayTmr, txDelay, delayTmr, delayMillis, total;
+unsigned long masterDelay = 100;
+unsigned long slaveDelay = 100;
+long tmr;
 
 Adafruit_NeoPixel pixels(1, 16, NEO_GRB + NEO_KHZ800);
 
@@ -126,17 +130,29 @@ void nextSequence() {
   }
 }
 
+/**** WS2812 LED ****/
 void setPixel(uint8_t r, uint8_t g, uint8_t b, uint8_t bright) {
   pixels.setBrightness(bright);
   pixels.setPixelColor(0, pixels.Color(r, g, b));
   pixels.show();  // update
 }
 
+/**** IR Helper Functions ****/
+void send(uint16_t value) {
+  IrReceiver.stop();  // turn receiver OFF
+  //unsigned long t = millis();       // store current millis
+  IrSender.sendNEC(0x00, value, 0);  // send sync pulse code
+  //Serial.printf("sync send time %d", millis() - t);  // send to terminal
+  //Serial.println();                                  // newline
+  //Serial.flush();      // clear the buffer
+  IrReceiver.start();  // turn receiver ON
+}
+
 void setup() {
 
   // Serial
   //Serial.begin();
-  //while (!Serial) {;} // development only!
+  //while (!Serial) { ; }  // development only!
   //Serial.println("Haptic Glove - RP2040 zero");
   //Serial.println("Loading settings from eeprom...");
 
@@ -156,8 +172,11 @@ void setup() {
   slave = false;
   delayTmrActive = false;
   broadcast = true;
+  bSync = false;
   stage = 0;
   loops = 1;
+  iSync = 0;
+  tristate = 2;  // 0 = behind, 1 = ahead, 2 = neither
   tmr = 0;
   txDelayTmr = 0;
   delayTmr = 0;
@@ -187,7 +206,7 @@ void setup() {
   pixels.clear();                   // set all pixel colours to 'off'
   setPixel(0, 0, 255, BRIGHTNESS);  // set to blue
 
-  txDelay = random(2000, 4000);  // init IR transmit delay
+  txDelay = random(1000, 5000);  // init IR transmit delay
 
   prevMillis = millis();  // store milliseconds since power on
 }
@@ -216,96 +235,131 @@ void loop() {
         nextSequence();  // increment pattern in sequence
         break;
     }
-    finger = 0;                       // reset
-    pin = Hand[Fingers[finger]];      // select pin
-    tmr = 0;                          // reset
-    stage = 1;                        // init stage (motor duration)
+    finger = 0;                   // reset
+    pin = Hand[Fingers[finger]];  // select pin
+    tmr = 0;                      // reset
+    stage = 1;                    // init stage (motor duration)
+    bSync = true;
     pulsed = false;                   // reset sync pulse flag
     digitalWrite(pin, HIGH);          // start motor
     setPixel(0, 255, 0, BRIGHTNESS);  // green
   }
 
-  if (stage == 1) {
-    if (tmr >= FINGER_ON_TIME) {          // timer check
-      digitalWrite(pin, LOW);             // stop motor
-      setPixel(255, 0, 255, BRIGHTNESS);  // purple
-      stage = 2;                          // init next stage (off duration)
-      tmr = 0;                            // reset
-    }
-  }
-
-  if (stage == 2) {
-    if (tmr >= FINGER_OFF_TIME) {     // timer check
-      tmr = 0;                        // reset
-      if (finger < 3) {               // next finger check
-        finger++;                     // increment
-        pin = Hand[Fingers[finger]];  // select pin
-        digitalWrite(pin, HIGH);      // start motor
-        stage = 1;                    // init next stage (on duration)
-      } else {                        // Apply the antecedant of the pattern ratio (3 loops)
-        if (loops < 4) {              // loop check
-          loops++;                    // increment
-          initSeq = true;             // init sequence
-        } else {
-          stage = 3;  // init stage (rest phase)
-          if (slave) {
-            setPixel(255, 0, 0, BRIGHTNESS);  // slave is red
+  switch (stage) {
+    case 1:
+      if (tmr >= FINGER_ON_TIME) {          // timer check
+        digitalWrite(pin, LOW);             // stop motor
+        setPixel(255, 0, 255, BRIGHTNESS);  // purple
+        stage = 2;                          // init next stage (off duration)
+        tmr = 0;                            // reset
+      }
+      break;
+    case 2:
+      if (tmr >= FINGER_OFF_TIME) {     // timer check
+        tmr = 0;                        // reset
+        if (finger < 3) {               // next finger check
+          finger++;                     // increment
+          pin = Hand[Fingers[finger]];  // select pin
+          digitalWrite(pin, HIGH);      // start motor
+          stage = 1;                    // init next stage (on duration)
+        } else {                        // Apply the antecedant of the pattern ratio (3 loops)
+          if (loops < 4) {              // loop check
+            loops++;                    // increment
+            initSeq = true;             // init sequence
+            bSync = true;               // reset flag
           } else {
-            setPixel(0, 0, 255, BRIGHTNESS);  // master is blue
+            if (slave) {
+              setPixel(255, 0, 0, BRIGHTNESS);  // slave is red
+            } else {
+              setPixel(0, 0, 255, BRIGHTNESS);  // master is blue
+            }
+            stage = 3;  // init stage (rest phase)
           }
         }
       }
-    }
-  }
-
-  if (stage == 3) {
-    // Apply the consequent of the pattern ratio
-    // i.e. the OFF time at the end of the antecedent pattern ratio
-    if (tmr >= FRAME_OFF_TIME) {
-      if (total >= RUNTIME) {
-        initSeq = false;  // timeout reached
+      break;
+    case 3:
+      // Apply the consequent of the pattern ratio
+      // i.e. the OFF time at the end of the antecedent pattern ratio
+      if (tmr >= FRAME_OFF_TIME) {
+        if (total >= RUNTIME) {
+          initSeq = false;  // timeout reached
+        } else {
+          initSeq = true;  // init new sequence
+        }
+        loops = 1;  // reset
       } else {
-        initSeq = true;  // init new sequence
-      }
-      loops = 1;  // reset
-    }
-    // master mode
-    if (!slave) {
-      if (!pulsed && tmr >= 500) {
-        IrReceiver.stop();                // turn receiver OFF
-        unsigned long t = millis();       // store current millis
-        IrSender.sendNEC(0x00, 0x40, 0);  // send sync pulse code
-        //Serial.printf("sync send time %d", millis() - t);  // send to terminal
-        //Serial.println();                                  // newline
-        //Serial.flush();      // clear the buffer
-        IrReceiver.start();  // turn receiver ON
-        pulsed = true;       // set branch flag
-      }
-    } else {
-      // Slave mode!
-      // check if IR data was received until frame off time is reached
-      if (IrReceiver.decode()) {
-        IrReceiver.resume();
-        if (IrReceiver.decodedIRData.command == 0x40) {
-          /* modify tmr based on value reached when entering this branch
-          it should be 500ms plus the transmit and receive time so
-          alter by the diff. Longer than the predicted time means
-          the master is behind so retarding the timer by the diff
-          should bring us closer to sync. Shorter than predicted will
-          give a negative result, the timer is advanced by the diff
-          to bring the devices in closer sync. The fact entry to this
-          branch requires an IR decode event allows the code to continue
-          using timers until the next successful sync event.
-          */
-          int d = tmr - (500 + TR_TIME);  // calc diff
-          if (d > -50 && d < 50) {        // sanity check
-            tmr -= d;                     // modify timer var
+        if (!slave) {
+          // master mode
+          if (!pulsed && tmr >= 500) {
+            send(MASTER_SYNC);  // broadcast
+            pulsed = true;      // set branch flag
           }
-          //Serial.printf("diff is %d", d);
-          //Serial.println();
+        } else {
+          // Slave mode!
+          // check if IR data was received until frame off time is reached
+          if (IrReceiver.decode()) {
+            if (IrReceiver.decodedIRData.command == 0x40) {
+              /* modify tmr based on value reached when entering this branch
+              it should be 500ms so alter by the diff. Longer than the
+              predicted time means the master is behind so retarding the
+              timer by the diff should bring us closer to sync. Shorter
+              than predicted will give a negative result, the timer is
+              advanced by the diff to bring the devices closer in sync.
+              The fact entry to this branch requires an IR decode event
+              allows the code to continue using timers until the next
+              successful sync event.
+              */
+
+              iSync = 0;                // reset counter
+              int d = tmr - 500;        // calc diff
+              if (d > -50 && d < 50) {  // sanity check
+                tmr -= d;               // modify timer var
+                if (d > 0) {
+                  tristate = 0;
+                } else if (d < 0) {
+                  tristate = 1;
+                }
+              }
+              //Serial.printf("diff: %d", d);
+              //Serial.println();
+              //Serial.printf("tristate: %d", tristate);
+              //Serial.println();
+              //Serial.printf("tmr: %u", tmr);
+              //Serial.println();
+              //Serial.flush();
+            }
+            IrReceiver.resume();
+          } else {
+            // no decode event! On the 6th cycle adjust the timer by 1ms
+            if (bSync == true && tmr >= 500) {
+              bSync = false;
+              iSync += 1;
+              //Serial.printf("tmr: %u", tmr);
+              //Serial.println();
+              //Serial.printf("sync count: %d", iSync);
+              //Serial.println();
+              //Serial.flush();
+              if (iSync == 6) {
+                iSync = 0;  // reset
+                switch (tristate) {
+                  case 0:
+                    tmr -= 1;
+                    //Serial.println("subtracting 1ms from timer");
+                    //Serial.flush();
+                    break;
+                  case 1:
+                    tmr += 1;
+                    //Serial.println("adding 1ms to timer");
+                    //Serial.flush();
+                    break;
+                }
+              }
+            }
+          }
         }
       }
-    }
+      break;
   }
 
   if (!insync) {
@@ -319,42 +373,38 @@ void loop() {
       //Serial.println();
       IrReceiver.resume();
 
-      if (IrReceiver.decodedIRData.command == 0x34) {
-        // master REQ received
-        broadcast = false;                // stop broadcasting
-        IrReceiver.stop();                // turn receiver OFF
-        IrSender.sendNEC(0x00, 0x35, 0);  // send ack
-        IrReceiver.start();               // turn receiver ON
-      } 
-      if (IrReceiver.decodedIRData.command == 0x35) {
-        // slave ACK received
-        slave = false;                    // set master
-        insync = true;                    // block re-entry
-        IrReceiver.stop();                // turn receiver OFF
-        IrSender.sendNEC(0x00, 0x36, 0);  // send ack
-        IrReceiver.start();
-        delayTmrActive = true;            // activate tmr
-        delayMillis = masterDelay;        // set delay
-        broadcast = false;                // stop broadcasting
+      switch (IrReceiver.decodedIRData.command) {
+        case 0x34:
+          // master REQ received
+          broadcast = false;  // stop broadcasting
+          send(SLAVE_ACK);    // respond
+          break;
+        case 0x35:
+          // slave ACK received
+          slave = false;              // set master
+          insync = true;              // block re-entry
+          send(MASTER_ACK);           // respond
+          delayTmrActive = true;      // activate tmr
+          delayMillis = masterDelay;  // set delay
+          broadcast = false;          // stop broadcasting
+          break;
+        case 0x36:
+          // master ACK received
+          slave = true;              // set slave
+          insync = true;             // block re-entry
+          delayTmrActive = true;     // activate tmr
+          delayMillis = slaveDelay;  // set delay
+          break;
       }
-      if (IrReceiver.decodedIRData.command == 0x36) {
-        // master ACK received
-        slave = true;              // set slave
-        insync = true;             // block re-entry
-        delayTmrActive = true;     // activate tmr
-        delayMillis = slaveDelay;  // set delay
+    } else {
+      if (broadcast && txDelayTmr >= txDelay) {
+        // No valid data received & delay expired
+        send(MASTER_REQ);  // send master REQ
+        txDelayTmr = 0;    // reset
       }
-    }
-
-    // No data received and delay expired yet?
-    if (broadcast && txDelayTmr >= txDelay) {
-      IrReceiver.stop();                // turn receiver OFF
-      IrSender.sendNEC(0x00, 0x34, 0);  // broadcast REQ
-      IrReceiver.start();               // turn receiver ON
-      txDelayTmr = 0;                   // reset
     }
   } else if (delayTmrActive) {      // status check
-    delayTmr += delta;    // increment
+    delayTmr += delta;              // increment
     if (delayTmr >= delayMillis) {  // timer check
       delayTmrActive = false;       // block re-entry
       initSeq = true;               // activate haptics
@@ -362,21 +412,23 @@ void loop() {
     }
     if (!slave) {
       if (!pulsed && delayTmr >= 100) {
-        unsigned long t = millis();     // store current millis
-        IrSender.sendNEC(0x00, 0x40, 0);  // send sync pulse code
-        pulsed = true;                    // set branch flag
+        send(MASTER_SYNC);  // broadcast
+        pulsed = true;      // set branch flag
       }
     } else {
       // Slave mode!
       // check if IR data was received until delay time is reached
       if (IrReceiver.decode()) {
-        IrReceiver.resume();
         if (IrReceiver.decodedIRData.command == 0x40) {
-          int d = delayTmr - 100;  // calc diff
-          if (d > -50 && d < 50) {             // sanity check
-            delayTmr -= d;                     // modify timer var
+          int d = delayTmr - 100;   // calc diff
+          if (d > -50 && d < 50) {  // sanity check
+            delayTmr -= d;          // modify timer var
           }
+          //Serial.printf("initial diff: %d", d);
+          //Serial.println();
+          //Serial.flush();
         }
+        IrReceiver.resume();
       }
     }
   }
