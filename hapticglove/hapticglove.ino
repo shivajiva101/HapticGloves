@@ -48,7 +48,7 @@ pattern observed when IR comms is present.
 #define EEPROM_ADDR 0       // start offset
 #define EEPROM_SIZE 128     // number of bytes of mem used as EEPROM
 #define PWD (0x60)          // used for initialising settings
-#define TR_TIME 130         // transmit & receive time in ms
+#define TR_TIME 67          // transmit time in ms
 #define RUNTIME 7200000     // session operation period in ms
 #define MASTER_REQ (0x34)   // NEC command used for master REQ
 #define MASTER_ACK (0x36)   // NEC IR command used for master ACK
@@ -71,7 +71,7 @@ uint8_t Fingers[4];  // array to hold the current sequence
 
 volatile uint8_t nSeq, finger, pin, stage, loops, nIdx, tristate, iSync;
 unsigned long prevMillis, txDelayTmr, txDelay, delayTmr, delayMillis, total;
-unsigned long masterDelay = 100;
+unsigned long masterDelay = 101; // master is always ahead!
 unsigned long slaveDelay = 100;
 long tmr;
 
@@ -301,7 +301,7 @@ void loop() {
           if (IrReceiver.decode()) {
             if (IrReceiver.decodedIRData.command == 0x40) {
               /* modify tmr based on value reached when entering this branch
-              it should be 500ms so alter by the diff. Longer than the
+              it should be 500ms + tx time so use as the diff ref. Longer than
               predicted time means the master is behind so retarding the
               timer by the diff should bring us closer to sync. Shorter
               than predicted will give a negative result, the timer is
@@ -311,10 +311,11 @@ void loop() {
               successful sync event.
               */
 
-              iSync = 0;                // reset counter
-              int d = tmr - 500;        // calc diff
-              if (d > -50 && d < 50) {  // sanity check
-                tmr -= d;               // modify timer var
+              iSync = 0;                      // reset counter
+              int d = tmr - (500 + TR_TIME);  // calc diff
+              if (d > -50 && d < 50) {        // sanity check
+                tmr -= d;                     // modify timer var
+                // update tristate var
                 if (d > 0) {
                   tristate = 0;
                 } else if (d < 0) {
@@ -332,7 +333,7 @@ void loop() {
             IrReceiver.resume();
           } else {
             // no decode event! On the 6th cycle adjust the timer by 1ms
-            if (bSync == true && tmr >= 500) {
+            if (bSync == true && tmr >= 500 + TR_TIME) {
               bSync = false;
               iSync += 1;
               //Serial.printf("tmr: %u", tmr);
