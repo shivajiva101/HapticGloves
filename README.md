@@ -1,2 +1,2 @@
 # HapticGloves
-Basic haptic glove software for RP2040 Zero
+Basic haptic glove software for ESP32 C3 Supermini Plus
